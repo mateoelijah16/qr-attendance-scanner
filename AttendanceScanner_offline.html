@@ -1,0 +1,276 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Offline Scanner — Attendance / Submission / Quiz</title>
+<style>
+  :root { --bg:#0f172a; --panel:#111827; --card:#1f2937; --txt:#e5e7eb; --accent:#22c55e; --warn:#f59e0b; --err:#ef4444; }
+  body { margin:0; font-family:system-ui, Segoe UI, Roboto, Helvetica, Arial, sans-serif; background:var(--bg); color:var(--txt); }
+  header { padding:16px 20px; background:linear-gradient(90deg, #111827, #0b1220); box-shadow:0 2px 0 #0008; position:sticky; top:0; z-index:10; }
+  h1 { margin:0; font-size:18px; letter-spacing:.5px; }
+  main { padding:20px; display:grid; gap:16px; grid-template-columns:1fr 1fr; }
+  section { background:var(--panel); border:1px solid #0006; border-radius:10px; padding:16px; }
+  .row { display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
+  .btn { background:#334155; color:#e5e7eb; border:1px solid #000; padding:10px 14px; border-radius:8px; cursor:pointer; }
+  .btn.primary { background:#2563eb; }
+  .btn.green { background:#16a34a; }
+  .btn.red { background:#b91c1c; }
+  .btn:disabled { opacity:.5; cursor:not-allowed; }
+  .badge { display:inline-block; padding:6px 10px; border-radius:999px; background:#334155; font-size:12px; }
+  input[type="text"], select { background:#0b1220; color:#e5e7eb; border:1px solid #334155; border-radius:8px; padding:10px 12px; }
+  input[type="checkbox"] { transform: scale(1.1); }
+  #scanInput { font-size:20px; width:100%; }
+  #log { width:100%; border-collapse:collapse; }
+  #log th, #log td { border-bottom:1px solid #0006; padding:8px; text-align:left; font-size:14px; }
+  #log tr.ok td { background:#052e1a; }
+  #log tr.dup td { background:#3a0c0c; }
+  small.mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
+  .stack { display:flex; flex-direction:column; gap:8px; }
+  .grid { display:grid; grid-template-columns: repeat(auto-fill, minmax(44px, 1fr)); gap:8px; }
+  .quizbtn { background:#0b1220; border:1px solid #334155; color:#e5e7eb; padding:8px; border-radius:8px; text-align:center; cursor:pointer; }
+  .quizbtn.active { outline:2px solid #22c55e; }
+  footer { padding:14px 20px; color:#94a3b8; }
+  @media (max-width: 900px){ main{grid-template-columns:1fr;} }
+</style>
+</head>
+<body>
+<header>
+  <h1>Attendance / Submission / Quiz — Offline Scanner</h1>
+</header>
+<main>
+  <section>
+    <h2 style="margin-top:0">1) Mode & Quiz</h2>
+    <div class="row">
+      <button class="btn" id="btnAttendance">Attendance</button>
+      <button class="btn" id="btnSubmission">Submission</button>
+      <button class="btn" id="btnQuiz">Quiz</button>
+      <span class="badge" id="modeBadge">Mode: Attendance</span>
+    </div>
+    <div class="stack" style="margin-top:12px" id="quizPane">
+      <div>Select Quiz # (1–20):</div>
+      <div class="grid" id="quizGrid"></div>
+    </div>
+    <div class="row" style="margin-top:12px">
+      <label><input type="checkbox" id="chkContinuous" checked> Continuous scan</label>
+      <label><input type="checkbox" id="chkAllowDup"> Allow duplicates</label>
+    </div>
+  </section>
+  <section>
+    <h2 style="margin-top:0">2) Roster (optional)</h2>
+    <div class="stack">
+      <div class="row">
+        <input type="file" id="fileRoster" accept=".csv,text/csv" />
+        <button class="btn" id="btnExportRoster">Export roster CSV</button>
+        <button class="btn red" id="btnClearRoster">Clear saved roster</button>
+      </div>
+      <small class="mono">CSV format: ID,Name (header row optional). Example: 2025001,JUAN DELA CRUZ</small>
+      <div id="rosterStatus" class="badge">No roster loaded</div>
+    </div>
+  </section>
+  <section>
+    <h2 style="margin-top:0">3) Scan here</h2>
+    <input id="scanInput" type="text" placeholder="Focus here and scan (or type) then press Enter" autocomplete="off" />
+    <div style="margin-top:10px" class="row">
+      <button class="btn green" id="btnFocus">Refocus</button>
+      <button class="btn" id="btnTest">Test scan (uses value)</button>
+    </div>
+  </section>
+  <section>
+    <h2 style="margin-top:0">4) Log</h2>
+    <div class="row">
+      <button class="btn" id="btnExport">Export log CSV</button>
+      <button class="btn red" id="btnClear">Clear log</button>
+    </div>
+    <table id="log" style="margin-top:10px">
+      <thead><tr>
+        <th>Timestamp</th><th>Mode</th><th>QuizNo</th><th>StudentID</th><th>StudentName</th><th>Status</th>
+      </tr></thead>
+      <tbody id="logBody"></tbody>
+    </table>
+  </section>
+</main>
+<footer>
+  Works offline. For camera-based scanning, you'll need a local server and a camera API; this file focuses on keyboard-wedge scanners for maximum compatibility.
+</footer>
+<script>
+(()=>{
+  const $ = sel => document.querySelector(sel);
+  const $$ = sel => document.querySelectorAll(sel);
+
+  // ----- State -----
+  const MODE = { ATT:'Attendance', SUB:'Submission', QUIZ:'Quiz' };
+  let currentMode = MODE.ATT;
+  let selectedQuiz = 0;
+  let allowDup = false;
+  let continuous = true;
+
+  const LS_LOG = 'scanner.log.v1';
+  const LS_ROSTER = 'scanner.roster.v1';
+
+  // ----- UI helpers -----
+  function setMode(m){ currentMode = m; updateModeBadge(); }
+  function updateModeBadge(){
+    $('#modeBadge').textContent = `Mode: ${currentMode}` + (currentMode===MODE.QUIZ && selectedQuiz? ` #${selectedQuiz}`: (currentMode===MODE.QUIZ? ' (select 1–20)':''));
+    $('#quizPane').style.display = currentMode===MODE.QUIZ? 'block':'none';
+  }
+  function setQuiz(n){ selectedQuiz = n; $$('#quizGrid .quizbtn').forEach(b=>b.classList.toggle('active', Number(b.dataset.n)===n)); updateModeBadge(); }
+
+  // ----- Quiz grid -----
+  const qg = $('#quizGrid');
+  for(let i=1;i<=20;i++){
+    const b = document.createElement('button');
+    b.type='button'; b.className='quizbtn'; b.textContent=String(i); b.dataset.n=i;
+    b.addEventListener('click', ()=> setQuiz(i));
+    qg.appendChild(b);
+  }
+
+  // ----- Roster -----
+  let roster = new Map(); // id -> name
+  function loadRoster(){
+    try{
+      const raw = localStorage.getItem(LS_ROSTER);
+      if(!raw){ roster = new Map(); rosterStatus("No roster loaded"); return; }
+      const arr = JSON.parse(raw);
+      roster = new Map(arr);
+      rosterStatus(`Roster loaded: ${roster.size} students`);
+    }catch(e){ roster = new Map(); rosterStatus('Roster load error'); }
+  }
+  function saveRoster(){ localStorage.setItem(LS_ROSTER, JSON.stringify([...roster.entries()])); rosterStatus(`Roster saved: ${roster.size} students`); }
+  function clearRoster(){ localStorage.removeItem(LS_ROSTER); roster = new Map(); rosterStatus('Roster cleared'); }
+  function rosterStatus(msg){ const el=$('#rosterStatus'); el.textContent=msg; }
+
+  $('#fileRoster').addEventListener('change', async (e)=>{
+    const f = e.target.files[0]; if(!f) return;
+    const txt = await f.text();
+    const lines = txt.split(/\r?\n/).filter(x=>x.trim().length>0);
+    const out = new Map();
+    for(const line of lines){
+      const parts = line.split(',');
+      if(parts.length < 2) continue;
+      let a=parts[0].trim(); let b=parts.slice(1).join(',').trim();
+      if(a.toLowerCase()==='id' && b.toLowerCase()==='name') continue; // header
+      if(!a) continue; out.set(a, b||'');
+    }
+    roster = out; saveRoster();
+    $('#fileRoster').value='';
+  });
+  $('#btnExportRoster').addEventListener('click', ()=>{
+    const rows = [['ID','Name'], ...[...roster.entries()].map(([id,name])=>[id,name])];
+    downloadCSV('Students.csv', rows);
+  });
+  $('#btnClearRoster').addEventListener('click', clearRoster);
+
+  // ----- Log -----
+  let log = [];
+  function loadLog(){
+    const raw = localStorage.getItem(LS_LOG); log = raw? JSON.parse(raw): [];
+    renderLog();
+  }
+  function saveLog(){ localStorage.setItem(LS_LOG, JSON.stringify(log)); }
+  function clearLog(){ if(confirm('Clear all log entries?')){ log=[]; saveLog(); renderLog(); } }
+  function renderLog(){
+    const tb = $('#logBody'); tb.innerHTML='';
+    for(const row of log){
+      const tr = document.createElement('tr');
+      tr.className = row.Status==='OK' ? 'ok': (row.Status.startsWith('DUPLICATE')?'dup':'');
+      for(const k of ['Timestamp','Mode','QuizNo','StudentID','StudentName','Status']){
+        const td = document.createElement('td'); td.textContent = row[k] ?? ''; tr.appendChild(td);
+      }
+      tb.appendChild(tr);
+    }
+  }
+
+  function todayKey(ts){ const d=new Date(ts); return d.getFullYear()+ '-' +String(d.getMonth()+1).padStart(2,'0')+ '-' +String(d.getDate()).padStart(2,'0'); }
+
+  function alreadyLoggedToday(mode, quizNo, id){
+    const day = todayKey(Date.now());
+    for(let i=log.length-1;i>=0;i--){
+      const r = log[i];
+      if(!r.Timestamp || todayKey(r.Timestamp)!==day) continue;
+      if(String(r.StudentID).toLowerCase() !== String(id).toLowerCase()) continue;
+      if(mode==='Attendance' || mode==='Submission'){
+        if(r.Mode===mode) return true;
+      }else if(mode==='Quiz'){
+        if(r.Mode==='Quiz' && Number(r.QuizNo)===Number(quizNo)) return true;
+      }
+    }
+    return false;
+  }
+
+  async function beep(ok=true){
+    try{
+      const ctx = new (window.AudioContext||window.webkitAudioContext)();
+      const o = ctx.createOscillator(); const g = ctx.createGain();
+      o.type='sine'; o.frequency.value = ok? 880: 220;
+      o.connect(g); g.connect(ctx.destination);
+      g.gain.value = 0.1; o.start(); setTimeout(()=>{o.stop();ctx.close();}, 120);
+    }catch(e){ /* ignore */ }
+  }
+
+  function processScan(raw){
+    const scanned = String(raw||'').replace(/[\r\n]/g,'').trim();
+    if(!scanned){ addStatusRow('','Empty scan ignored',''); return; }
+    let quizNo = '';
+    if(currentMode===MODE.QUIZ){
+      if(!selectedQuiz){ addStatusRow(scanned,'Select a quiz # (1–20) before scanning.','', true); beep(false); return; }
+      quizNo = selectedQuiz;
+    }
+    const id = scanned;
+    const name = roster.get(id) || '(Unknown)';
+
+    if(!allowDup && alreadyLoggedToday(currentMode, quizNo||null, id)){
+      addLog({ Timestamp: new Date().toISOString(), Mode: currentMode, QuizNo: quizNo||'', StudentID: id, StudentName: name, Status: 'DUPLICATE (ignored)' });
+      beep(false); return;
+    }
+    addLog({ Timestamp: new Date().toISOString(), Mode: currentMode, QuizNo: quizNo||'', StudentID: id, StudentName: name, Status: 'OK' });
+    beep(true);
+  }
+
+  function addStatusRow(id, msg, mode, warn){
+    const row = { Timestamp:new Date().toISOString(), Mode: mode||'', QuizNo:'', StudentID:id||'', StudentName:'', Status: msg };
+    log.push(row); saveLog(); renderLog();
+  }
+
+  function addLog(row){ log.push(row); saveLog(); renderLog(); }
+
+  function downloadCSV(filename, rows){
+    const escape = s => '"' + String(s).replace(/"/g,'""') + '"';
+    const csv = rows.map(r=> r.map(escape).join(',')).join('\n');
+    const blob = new Blob([csv], {type:'text/csv;charset=utf-8;'});
+    const url = URL.createObjectURL(blob); const a = document.createElement('a');
+    a.href = url; a.download = filename; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+  }
+
+  // ----- Wire UI -----
+  $('#btnAttendance').addEventListener('click', ()=>{ setMode(MODE.ATT); });
+  $('#btnSubmission').addEventListener('click', ()=>{ setMode(MODE.SUB); });
+  $('#btnQuiz').addEventListener('click', ()=>{ setMode(MODE.QUIZ); });
+
+  $('#chkContinuous').addEventListener('change', e=> { continuous = !!e.target.checked; });
+  $('#chkAllowDup').addEventListener('change', e=> { allowDup = !!e.target.checked; });
+
+  const input = $('#scanInput');
+  $('#btnFocus').addEventListener('click', ()=> input.focus());
+  $('#btnTest').addEventListener('click', ()=> processScan(input.value));
+
+  input.addEventListener('keydown', e=>{
+    if(e.key==='Enter'){
+      processScan(input.value);
+      input.value='';
+      if(continuous) setTimeout(()=> input.focus(), 0);
+      e.preventDefault();
+    }
+  });
+
+  // ----- Init -----
+  loadRoster();
+  loadLog();
+  setMode(MODE.ATT);
+  setQuiz(0);
+  setTimeout(()=> input.focus(), 50);
+})();
+</script>
+</body>
+</html>
