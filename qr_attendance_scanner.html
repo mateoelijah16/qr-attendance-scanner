@@ -1,0 +1,118 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>QR Attendance Scanner</title>
+    <script src="https://unpkg.com/html5-qrcode" type="text/javascript"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background-color: #f9f9f9;
+            padding: 20px;
+            max-width: 600px;
+            margin: auto;
+        }
+        h1 {
+            text-align: center;
+            color: #333;
+        }
+        #reader {
+            width: 100%;
+            margin: auto;
+        }
+        table {
+            width: 100%;
+            margin-top: 20px;
+            border-collapse: collapse;
+        }
+        th, td {
+            border: 1px solid #ddd;
+            padding: 8px;
+            text-align: center;
+        }
+        th {
+            background-color: #f2f2f2;
+        }
+        button {
+            margin-top: 20px;
+            padding: 10px;
+            width: 100%;
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+        button:hover {
+            background-color: #45a049;
+        }
+    </style>
+</head>
+<body>
+    <h1>QR Attendance Scanner</h1>
+    <div id="reader"></div>
+
+    <table id="attendanceTable">
+        <thead>
+            <tr>
+                <th>Student ID/Name</th>
+                <th>Date</th>
+                <th>Timestamp</th>
+            </tr>
+        </thead>
+        <tbody></tbody>
+    </table>
+
+    <button onclick="downloadCSV()">Download Attendance CSV</button>
+
+    <script>
+        function onScanSuccess(decodedText, decodedResult) {
+            const date = new Date();
+            const formattedDate = date.toISOString().split('T')[0];
+            const timestamp = date.toLocaleTimeString();
+
+            const table = document.getElementById('attendanceTable').getElementsByTagName('tbody')[0];
+            const newRow = table.insertRow();
+            newRow.insertCell(0).innerText = decodedText;
+            newRow.insertCell(1).innerText = formattedDate;
+            newRow.insertCell(2).innerText = timestamp;
+        }
+
+        const html5QrCode = new Html5Qrcode("reader");
+        Html5Qrcode.getCameras().then(devices => {
+            if (devices && devices.length) {
+                html5QrCode.start(
+                    devices[0].id,
+                    {
+                        fps: 10,
+                        qrbox: 250
+                    },
+                    onScanSuccess
+                );
+            }
+        }).catch(err => {
+            console.error("Camera error:", err);
+        });
+
+        function downloadCSV() {
+            let csv = 'Student ID/Name,Date,Timestamp
+';
+            const rows = document.querySelectorAll('#attendanceTable tbody tr');
+            rows.forEach(row => {
+                const cols = row.querySelectorAll('td');
+                csv += Array.from(cols).map(col => col.innerText).join(',') + '
+';
+            });
+
+            const blob = new Blob([csv], { type: 'text/csv' });
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.setAttribute('href', url);
+            a.setAttribute('download', 'attendance_log.csv');
+            a.click();
+        }
+    </script>
+</body>
+</html>
